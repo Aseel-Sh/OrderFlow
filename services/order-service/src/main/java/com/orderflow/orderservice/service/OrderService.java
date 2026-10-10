@@ -22,7 +22,6 @@ import com.orderflow.orderservice.repository.OrderRepository;
 import jakarta.transaction.Transactional;
 import org.springframework.cache.Cache;
 import org.springframework.cache.CacheManager;
-import org.springframework.cache.annotation.Cacheable;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -100,11 +99,26 @@ public class OrderService {
         return toResponse(order);
     }
 
+    public OrderStatusResponse getOrderStatus(UUID orderId) {
+        try {
+            Cache cache = cacheManager.getCache("orderStatus");
+            if (cache != null) {
+                OrderStatusResponse cached = cache.get(orderId, OrderStatusResponse.class);
+                if (cached != null) {
+                    return cached;
+                }
+            }
+        } catch (RuntimeException exception) {
             log.warn("Failed to read order status cache for orderId={}", orderId, exception);
         }
 
         OrderEntity order = load(orderId);
-        OrderStatusResponse response = new OrderStatusResponse(order.getId(), order.getStatus().name(), order.getFailureReason(), order.getUpdatedAt());
+        OrderStatusResponse response = new OrderStatusResponse(
+                order.getId(),
+                order.getStatus().name(),
+                order.getFailureReason(),
+                order.getUpdatedAt()
+        );
         updateStatusCache(order);
         return response;
     }
@@ -112,7 +126,10 @@ public class OrderService {
     @Transactional
     public void onInventoryResult(InventoryResultEvent event) {
         OrderEntity order = load(event.orderId());
-        return new OrderStatusResponse(order.getId(), order.getStatus().name(), order.getFailureReason(), order.getUpdatedAt());
+        if ("RESERVED".equals(event.status()) && order.getStatus() == OrderStatus.PENDING_INVENTORY) {
+            order.setStatus(OrderStatus.PENDING_PAYMENT);
+            order.setUpdatedAt(Instant.now());
+
             PaymentRequestedEvent paymentRequestedEvent = new PaymentRequestedEvent(
                     UUID.randomUUID(),
                     "v1",
